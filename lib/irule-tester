@@ -10,7 +10,7 @@
 
 # irule-tester version number
 
-typeset -r version='0.6.0'
+typeset -r version='0.6.1'
 
 # Collect the current time to use for test duration calculation
 
@@ -29,10 +29,10 @@ typeset ORANGE='\033[1;38;130m'
 
 typeset -r connectTimeout="10"
 
-# Base curl command.  Leverages -s (silent mode) and -S (show errors even 
-# when asked to be silent).
+# Base curl command.  Leverages -s (silent mode), -S (show errors even 
+# when asked to be silent), and -k (insecure allows SSL Cert issues to pass).
 
-typeset -r curlCmd="/usr/bin/curl -s -S --connect-timeout ${connectTimeout}"
+typeset -r curlCmd="/usr/bin/curl -k -s -S --connect-timeout ${connectTimeout}"
 
 # Set the default user agent.  This is necessary if the site is using an 
 # ASM for content blocking, or if the iRule logic uses user agent data to 
@@ -135,13 +135,15 @@ host $hostName 2>&1 >/dev/null || {
 #
 # Required arguments:
 #   1) Test case ID
+#   2) Test Description (optional)
 
 function cannot_test {
 
   local testCase=$1
+  local testDesc=$2
 
   ((warnCount++))
-  printMsg "WARN" "$testCase" "logic not currently testable"
+  printMsg "WARN" "$testCase" "logic not currently testable: ${testDesc}"
 
 }
 
@@ -254,6 +256,55 @@ function should_redirect {
   }
 }
 
+# This function tests if the requested URL does not redirect as expected.  If the
+# requested URL is discarded, the request will timeout after the number of
+# seconds defined in the connectTimeout variable.
+#
+# Required arguments:
+#   1) Test case ID
+#   2) The requested URL that should not be redirected
+
+
+function should_not_redirect {
+
+  local testCase=$1
+  local reqUrl=$2
+
+  local redirectResp=$($curlCmd -A "$userAgent" $reqUrl -I | egrep "^[Ll]ocation: " | dos2unix)
+  local location=$(echo $redirectResp | sed 's/^[Ll]ocation: //g')
+
+  [[ -z $location ]] && {
+
+    ((passCount++))
+    printMsg "INFO" "$testCase" "$reqUrl" "did not redirect. This is the expected behavior for should_not_redirect"
+
+    [[ $extendedChecks == 1 ]] && {
+
+      [[ $checkAsm == 1 ]] && check_for_asm "$testCase" "$reqUrl" && return
+
+      [[ $checkSorry == 1 ]] && check_for_sorry "$testCase" "$reqUrl" && return
+
+      [[ $countRedirects == 1 ]] && check_for_multiple_redirects "$testCase" "$reqUrl" && return
+  }
+
+  [[ ! -z "$location" ]] && {
+  
+      ((failCount++))
+      printMsg "ERROR" "$testCase" "$reqUrl" "Redirect to ${location} occured when it should have."
+      
+      return
+
+    }
+
+    return
+
+  }
+        
+      ((failCount++))
+      printMsg "ERROR" "$testCase" "$reqUrl" "Redirect to ${location} occured when it should not."
+      
+}
+
 # This function tests if the requested host header is acceptable.
 #
 # Required arguments:
@@ -323,12 +374,12 @@ function should_select_pool {
   local reqUrl=$2
   local destPool=$3
 
-  local poolResp=$($curlCmd -A "$userAgent" $reqUrl -I | egrep -o "^Set-Cookie: BIGipServer${destPool}|Set-Cookie: LastSelectedPool=/[A-Za-z0-9_-]*/${destPool}" | dos2unix)
-  local selectedPool=$(echo $poolResp | sed 's/^Set-Cookie: BIGipServer//g' | sed "s|^Set-Cookie: LastSelectedPool=/[A-Za-z0-9_-]*/||g" | awk '{print $1}' | grep -v ';')
+  local poolResp=$($curlCmd -A "$userAgent" $reqUrl -I | egrep -o "^Set-Cookie: BIGipServer$.*|Set-Cookie: LastSelectedPool=/[A-Za-z0-9_-]*/.*" | dos2unix)
+  local selectedPool=$(echo $poolResp | sed 's/^Set-Cookie: BIGipServer//g' | sed  "s|^Set-Cookie: LastSelectedPool=/[A-Za-z0-9_-]*/||g" | sed "s/;$//" | awk '{print $1}')
 
-  [[ -z $selectedPool ]] && {
+  [[ "$selectedPool" != "$destPool" ]] && { 
     ((failCount++))
-    printMsg "ERROR" "$testCase" "$reqUrl" "failed to find pool selection in header"
+    printMsg "ERROR" "$testCase" "$reqUrl" "failed to find pool [$destPool] selection in header, found [$selectedPool] instead"
     return
 
   } || {
@@ -349,6 +400,61 @@ function should_select_pool {
   }
 
 }
+
+# This function tests if the requested URL is rewriten to a specific URI.
+# This test requires that the HTTP_REQUEST/HTTP_RESPONSE irule that
+# accompanies this code is has been applied to the target virtual server.
+#
+# This function also checks for the defined sorry or ASM block content, if the 
+# feature is enabled.
+#
+# Required arguments:
+#   1) Test case ID
+#   2) The requested URL that should be sent to a pool
+#   3) The expected URI that should be returned on the LastURI cookie
+
+function should_rewrite {
+
+  local testCase=$1
+  local reqUrl=$2
+  local expectedRewrite=$3
+
+  local uriResp=$($curlCmd -A "$userAgent" "$reqUrl" -I | egrep -o "Set-Cookie: LastURI=.*" | dos2unix)
+  local location=$(echo $uriResp | sed 's/^Set-Cookie: LastURI=//g' |sed 's/;$//')
+
+  [[ -z $location ]] && {
+      printMsg "ERROR" "$testCase" "$reqUrl" "rewrite failed, could not find LastURI cookie."
+      ((failCount++))
+      return
+    }
+  
+    [[ "$expectedRewrite" == "$location" ]] && {
+      printMsg "INFO" "$testCase" "$reqUrl" "redirects to $location as expected"
+      ((passCount++))
+  
+        [[ $checkAsm == 1 ]] && check_for_asm "$testCase" "$reqUrl" && return
+  
+        [[ $checkSorry == 1 ]] && check_for_sorry "$testCase" "$reqUrl" && return
+  
+        [[ $countRedirects == 1 ]] && check_for_multiple_redirects "$testCase" "$reqUrl" && return
+  
+      return
+  
+    } || {
+      printMsg "ERROR" "$testCase" "$reqUrl" "expected redirect to [$expectedRewrite] but found [$location]"
+      ((failCount++))
+  
+        [[ $checkAsm == 1 ]] && check_for_asm "$testCase" "$reqUrl" && return
+  
+        [[ $checkSorry == 1 ]] && check_for_sorry "$testCase" "$reqUrl" && return
+  
+        [[ $countRedirects == 1 ]] && check_for_multiple_redirects "$testCase" "$reqUrl" && return
+  
+      return
+    }
+  }
+
+
 
 # This function tests if the response to the requested URL is sent from the F5 
 # itself and that the response is a 200 OK.

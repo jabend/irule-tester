@@ -1,7 +1,13 @@
+when HTTP_REQUEST {
+	set holder [HTTP::uri]
+}
+
 when HTTP_RESPONSE {
-	
 	# Insert LastSelectedPool cookie with the value of the selected pool to
 	# enable automated testing to identify if the LB made the expected decision
 	HTTP::cookie insert name "LastSelectedPool" value [LB::server pool]
 	
+	# Insert LastURI cookie with the value of [HTTP::uri] to
+	# enable automated testing to identify if the LB made the expected rewrite.
+	HTTP::cookie insert name "LastURI" value $holder
 }

@@ -107,11 +107,11 @@ will be added as they are required.
 
 **Usage:**
 
-  cannot\_test TEST\_CASE\_NUMBER
+  cannot\_test TEST\_CASE\_NUMBER [TEST\_DESCRIPTION]
 
 **Example:**
 
-	cannot_test 0001
+	cannot_test 0001 "Description of test"
 
 ---
 
@@ -158,6 +158,34 @@ will be added as they are required.
 **Example:**
 
 	should_redirect 0001 http://${targetSite}/original/location http://${targetSite}/new/location
+
+---
+
+`should_not_redirect`
+
+  + Use this method when you need to validate that a given request is not redirected
+
+**Usage:**
+
+  should\_not\_redirect TEST\_CASE\_NUMBER SOURCE\_PARAMETERIZED\_URL 
+
+**Example:**
+
+	should_not_redirect 0001 http://${targetSite}/original/location
+
+---
+
+`should_rewrite`
+
+  + Use this method when you need to validate that a given request URI is rewritten before being passed to pool member
+
+**Usage:**
+
+  should\_rewrite TEST\_CASE\_NUMBER SOURCE\_PARAMETERIZED\_URL TARGET\_URI
+
+**Example:**
+
+	should_rewrite 0001 http://${targetSite}/original/location /new/location
 
 ---
 
@@ -216,12 +244,19 @@ This iRule can be used to insert a cookie into all HTTP responses from pool
 selections.  This enables irule-tester to identify which pool was used to 
 serve the content for a requested URL
 
+	when HTTP_REQUEST {
+		set holder [HTTP::uri]
+	}
+
 	when HTTP_RESPONSE {
 	
 		# Insert LastSelectedPool cookie with the value of the selected pool to
 		# enable automated testing to identify if the LB made the expected decision
 		HTTP::cookie insert name "LastSelectedPool" value [LB::server pool]
 	
+		# Insert LastURI cookie with the value of [HTTP::uri] to
+		# enable automated testing to identify if the LB made the expected rewrite.
+		HTTP::cookie insert name "LastURI" value $holder
 	}
 
 ## Author
